@@ -16,42 +16,77 @@ import (
 )
 
 // DetectSkills determines whether dir is a single skill, a multi-skill
-// parent, or contains no skills. It follows symlinks when checking
-// subdirectories.
+// parent, or contains no skills. It recursively searches for SKILL.md files
+// up to a default max depth of 6 levels, bounding total directories at 2000.
 func DetectSkills(dir string) (types.SkillMode, []string) {
-	// If the directory itself contains SKILL.md, it's a single skill.
-	if _, err := os.Stat(filepath.Join(dir, "SKILL.md")); err == nil {
-		return types.SingleSkill, []string{dir}
-	}
+	return DetectSkillsWithLimit(dir, 6, 2000)
+}
 
-	// Scan immediate subdirectories for SKILL.md.
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return types.NoSkill, nil
+// DetectSkillsWithLimit determines skill mode and directories with explicit max depth and directory limits.
+func DetectSkillsWithLimit(root string, maxDepth int, maxDirs int) (types.SkillMode, []string) {
+	// If the directory itself contains SKILL.md, it's a single skill.
+	if _, err := os.Stat(filepath.Join(root, "SKILL.md")); err == nil {
+		return types.SingleSkill, []string{root}
 	}
 
 	var skillDirs []string
-	for _, entry := range entries {
-		name := entry.Name()
-		if strings.HasPrefix(name, ".") {
-			continue
+	visitedDirs := make(map[string]bool)
+	dirCount := 0
+
+	var walk func(currentPath string, depth int)
+	walk = func(currentPath string, depth int) {
+		if depth > maxDepth || dirCount >= maxDirs {
+			return
 		}
-		subdir := filepath.Join(dir, name)
-		// Use os.Stat (not entry.IsDir()) to follow symlinks.
-		info, err := os.Stat(subdir)
+
+		info, err := os.Stat(currentPath)
 		if err != nil || !info.IsDir() {
-			continue
+			return
 		}
-		if _, err := os.Stat(filepath.Join(subdir, "SKILL.md")); err == nil {
-			skillDirs = append(skillDirs, subdir)
+
+		absCurrent, err := filepath.Abs(currentPath)
+		if err != nil {
+			absCurrent = currentPath
+		}
+		if visitedDirs[absCurrent] {
+			return
+		}
+		visitedDirs[absCurrent] = true
+		dirCount++
+
+		// Check if current directory has SKILL.md (skip root since we checked it above)
+		if currentPath != root {
+			if _, err := os.Stat(filepath.Join(currentPath, "SKILL.md")); err == nil {
+				skillDirs = append(skillDirs, currentPath)
+				// Once we found a SKILL.md here, we don't need to walk deeper into this skill's subtree.
+				return
+			}
+		}
+
+		entries, err := os.ReadDir(currentPath)
+		if err != nil {
+			return
+		}
+
+		for _, entry := range entries {
+			name := entry.Name()
+			if strings.HasPrefix(name, ".") {
+				continue
+			}
+			subdir := filepath.Join(currentPath, name)
+			walk(subdir, depth+1)
 		}
 	}
 
+	walk(root, 0)
+
 	if len(skillDirs) > 0 {
+		sort.Strings(skillDirs)
 		return types.MultiSkill, skillDirs
 	}
 	return types.NoSkill, nil
 }
+
 
 // ReadSkillRaw reads the raw SKILL.md content from a directory without parsing
 // frontmatter. This is used as a fallback for content/contamination analysis when
